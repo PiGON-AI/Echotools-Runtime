@@ -37,14 +37,17 @@ jobs:
           - name: windows-x64
             os: windows-latest
             exe: whisper-cli.exe
+            suffix: .exe
             flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
           - name: macos-arm64
             os: macos-14
             exe: whisper-cli
+            suffix: ""
             flags: -DGGML_NATIVE=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
           - name: linux-x64
             os: ubuntu-22.04
             exe: whisper-cli
+            suffix: ""
             flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
     steps:
       - name: Check out whisper.cpp at the pinned commit
@@ -92,17 +95,21 @@ jobs:
           } > "$out/BUILD-INFO.txt"
           cd "$out"
           "./${{ matrix.exe }}" --help > /dev/null 2>&1 || echo "note: --help exited non-zero (expected on some builds)"
-          zip -9 "../whisper-cli-${{ matrix.name }}.zip" "${{ matrix.exe }}" LICENSE-whisper.cpp.txt BUILD-INFO.txt
-          cd ..
-          sha256sum "whisper-cli-${{ matrix.name }}.zip" | tee "whisper-cli-${{ matrix.name }}.sha256"
-          stat -c '%s bytes' "whisper-cli-${{ matrix.name }}.zip" 2>/dev/null || stat -f '%z bytes' "whisper-cli-${{ matrix.name }}.zip"
+          # The binary ships RAW (the extensions never extract archives), under
+          # a platform-qualified name, beside its licence and build record.
+          # openssl is the one hashing tool every runner image carries.
+          mv "${{ matrix.exe }}" "whisper-cli-${{ matrix.name }}${{ matrix.suffix }}"
+          openssl dgst -sha256 -r "whisper-cli-${{ matrix.name }}${{ matrix.suffix }}" | tee SHA256SUMS-${{ matrix.name }}.txt
+          wc -c < "whisper-cli-${{ matrix.name }}${{ matrix.suffix }}" | tr -d ' ' | sed 's/$/ bytes/'
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: whisper-cli-${{ matrix.name }}
           path: |
-            whisper-cli-${{ matrix.name }}.zip
-            whisper-cli-${{ matrix.name }}.sha256
+            pack/whisper-cli-${{ matrix.name }}${{ matrix.suffix }}
+            pack/LICENSE-whisper.cpp.txt
+            pack/BUILD-INFO.txt
+            pack/SHA256SUMS-${{ matrix.name }}.txt
           if-no-files-found: error
           retention-days: 30
