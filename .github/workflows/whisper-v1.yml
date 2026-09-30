@@ -34,11 +34,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # No OpenMP and a static C runtime on Windows and Linux: the first
+          # build imported VCOMP140/MSVCP140 on Windows and libgomp.so.1 on
+          # Linux, which a fresh machine may not have (found by running the
+          # Linux binary in a bare Ubuntu 22.04 container, 2026-09-29). ggml's
+          # own thread pool takes over; the binary depends on the OS alone.
           - name: windows-x64
             os: windows-latest
             exe: whisper-cli.exe
             suffix: .exe
-            flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           - name: macos-arm64
             os: macos-14
             exe: whisper-cli
@@ -48,7 +53,7 @@ jobs:
             os: ubuntu-22.04
             exe: whisper-cli
             suffix: ""
-            flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF -DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++\ -static-libgcc
     steps:
       - name: Check out whisper.cpp at the pinned commit
         uses: actions/checkout@v4
@@ -99,6 +104,13 @@ jobs:
           # a platform-qualified name, beside its licence and build record.
           # openssl is the one hashing tool every runner image carries.
           mv "${{ matrix.exe }}" "whisper-cli-${{ matrix.name }}${{ matrix.suffix }}"
+          # Portability receipt in the run log: what the binary still needs
+          # from the OS. Linux: the dynamic libraries; Windows: the DLL names.
+          echo "--- runtime dependencies ---"
+          if [ "${{ runner.os }}" = "Linux" ]; then ldd "whisper-cli-${{ matrix.name }}"; fi
+          if [ "${{ runner.os }}" = "macOS" ]; then otool -L "whisper-cli-${{ matrix.name }}"; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then grep -a -o -i '[a-z0-9_.-]*\.dll' "whisper-cli-${{ matrix.name }}.exe" | sort -u; fi
+          echo "----------------------------"
           openssl dgst -sha256 -r "whisper-cli-${{ matrix.name }}${{ matrix.suffix }}" | tee SHA256SUMS-${{ matrix.name }}.txt
           wc -c < "whisper-cli-${{ matrix.name }}${{ matrix.suffix }}" | tr -d ' ' | sed 's/$/ bytes/'
 
