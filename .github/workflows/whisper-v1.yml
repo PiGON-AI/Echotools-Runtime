@@ -1,0 +1,108 @@
+# Builds the whisper.cpp command-line binary for the three desktop platforms
+# from ONE pinned upstream commit, and publishes them as run artifacts with a
+# SHA-256 list. Nothing is released by this workflow: the binaries are tested
+# by ear on real machines first, then attached by hand to the `whisper-v1`
+# release together with the model, and the hashes are pinned in the
+# extensions' source. Every pin therefore points back to a public run log.
+#
+# Why we build instead of downloading: upstream attaches no binaries to its
+# releases (v1.9.4, checked 2026-09-29), only source archives.
+#
+# Portability: GGML_NATIVE is OFF so the binary is not tuned to the runner's
+# CPU; x64 targets AVX2 + FMA + F16C (every desktop CPU since about 2013);
+# Apple silicon builds the Metal backend, which is the default there, with
+# the shader library embedded so the binary stands alone.
+
+name: whisper-v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      whisper_commit:
+        description: "ggml-org/whisper.cpp commit to build (v1.9.4 = 927cfce34f31707e17f2bff35c349632fb9e2c3a)"
+        required: true
+        default: "927cfce34f31707e17f2bff35c349632fb9e2c3a"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            exe: whisper-cli.exe
+            flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+          - name: macos-arm64
+            os: macos-14
+            exe: whisper-cli
+            flags: -DGGML_NATIVE=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+          - name: linux-x64
+            os: ubuntu-22.04
+            exe: whisper-cli
+            flags: -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+    steps:
+      - name: Check out whisper.cpp at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ inputs.whisper_commit }}
+          path: whisper.cpp
+
+      - name: Configure
+        shell: bash
+        working-directory: whisper.cpp
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=OFF
+          -DWHISPER_BUILD_TESTS=OFF
+          -DWHISPER_BUILD_SERVER=OFF
+          -DWHISPER_BUILD_EXAMPLES=ON
+          ${{ matrix.flags }}
+
+      - name: Build whisper-cli
+        shell: bash
+        working-directory: whisper.cpp
+        run: cmake --build build --config Release --target whisper-cli --parallel
+
+      - name: Collect
+        shell: bash
+        working-directory: whisper.cpp
+        run: |
+          set -euo pipefail
+          out="../pack"
+          mkdir -p "$out"
+          bin="$(find build/bin -name '${{ matrix.exe }}' -type f | head -1)"
+          test -n "$bin"
+          cp "$bin" "$out/${{ matrix.exe }}"
+          cp LICENSE "$out/LICENSE-whisper.cpp.txt"
+          {
+            echo "whisper.cpp commit: ${{ inputs.whisper_commit }}"
+            echo "platform: ${{ matrix.name }}"
+            echo "runner image: ${{ runner.os }} / ${{ matrix.os }}"
+            echo "cmake flags: -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF ${{ matrix.flags }}"
+            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$out/BUILD-INFO.txt"
+          cd "$out"
+          "./${{ matrix.exe }}" --help > /dev/null 2>&1 || echo "note: --help exited non-zero (expected on some builds)"
+          zip -9 "../whisper-cli-${{ matrix.name }}.zip" "${{ matrix.exe }}" LICENSE-whisper.cpp.txt BUILD-INFO.txt
+          cd ..
+          sha256sum "whisper-cli-${{ matrix.name }}.zip" | tee "whisper-cli-${{ matrix.name }}.sha256"
+          stat -c '%s bytes' "whisper-cli-${{ matrix.name }}.zip" 2>/dev/null || stat -f '%z bytes' "whisper-cli-${{ matrix.name }}.zip"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-cli-${{ matrix.name }}
+          path: |
+            whisper-cli-${{ matrix.name }}.zip
+            whisper-cli-${{ matrix.name }}.sha256
+          if-no-files-found: error
+          retention-days: 30
